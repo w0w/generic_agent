@@ -1,46 +1,42 @@
 package utils
 
 import (
-	"fmt"
 	"log"
-	"os"
+	"anondd/utils/storage"
 	"anondd/utils/webscraper"
 )
 
 // UtilsManager handles all utility services
 type UtilsManager struct {
-	logger   *log.Logger
-	Scraper  *webscraper.VirtualsScraper
-	// Add more utilities here as needed, for example:
-	// DataAnalyzer *analyzer.DataAnalyzer
-	// ImageProcessor *processor.ImageProcessor
+	scraper *webscraper.VirtualsScraper
+	store   *storage.AgentStore
+	logger  *log.Logger
 }
 
 // NewUtilsManager creates and initializes all utilities
 func NewUtilsManager(logger *log.Logger) *UtilsManager {
-	if logger == nil {
-		logger = log.New(os.Stdout, "[Utils] ", log.LstdFlags)
-	}
-	
+	store := storage.NewAgentStore("training_data", logger)
 	return &UtilsManager{
-		logger:  logger,
-		Scraper: webscraper.NewVirtualsScraper(logger),
-		// Initialize other utilities here
+		store:  store,
+		logger: logger,
 	}
 }
 
-// Initialize sets up all required directories and configurations
+// Initialize sets up the scraper and other components
 func (m *UtilsManager) Initialize() error {
-	// Create required directories
-	if err := os.MkdirAll("training_data", 0755); err != nil {
-		return fmt.Errorf("failed to create training_data directory: %v", err)
-	}
+	m.logger.Println("Initializing VirtualsScraper...")
+	// Initialize scraper with store directly
+	m.scraper = webscraper.NewVirtualsScraper(m.logger, m.store)
 	
-	m.logger.Println("Utils Manager initialized successfully")
 	return nil
 }
 
-// GetScraper returns the VirtualsScraper instance
+// GetScraper returns the configured scraper instance
 func (m *UtilsManager) GetScraper() *webscraper.VirtualsScraper {
-	return m.Scraper
+	return m.scraper
+}
+
+// GetStore returns the AgentStore instance
+func (m *UtilsManager) GetStore() *storage.AgentStore {
+	return m.store
 }

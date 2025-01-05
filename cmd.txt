@@ -1,0 +1,26 @@
+# Test API endpoints
+
+# Get all agents
+curl -X GET http://localhost:8080/api/agents
+
+# Get a specific agent by ID (replace {id} with actual agent ID)
+curl -X GET http://localhost:8080/api/agents/{id}
+
+# Get the agent index
+curl -X GET http://localhost:8080/api/index
+
+#local to remote
+
+scp -r bot_tests/* root@139.162.35.51:/root/anondd/
+
+#remote to lcoal
+
+scp -r root@remote_host:/path/to/remote_folder /local/destination/
+
+#screen attach
+
+screen -r anondd
+
+#screen exit
+
+ctrl + a + k
