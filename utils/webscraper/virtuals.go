@@ -2,6 +2,7 @@ package webscraper
 
 import (
     "fmt"
+	"encoding/json"
     "log"
     "strings"
     "time"
@@ -18,8 +19,8 @@ import (
 )
 
 const (
-    startAgentID = 235
-    maxAgentID   = 240  // Reduced range for testing
+    startAgentID = 1
+    maxAgentID   = 500  // Increase range to catch more agents
     rawDataDir   = "training_data/raw"
     logFile      = "training_data/scraper.log"
 )
@@ -96,6 +97,14 @@ func (v *VirtualsScraper) ScrapeAgents() error {
 
     // Iterate through agent IDs
     for id := startAgentID; id <= maxAgentID; id++ {
+        agentID := fmt.Sprintf("%d", id)
+        
+        // Check if we should fetch this agent
+        if (!v.store.ShouldFetch(agentID)) {
+            v.logger.Printf("[SKIP] Agent %s was recently fetched", agentID)
+            continue
+        }
+
         endpoint := fmt.Sprintf("/virtuals/%d", id)
         v.logger.Printf("[FETCH] Attempting to fetch agent %d from %s", id, endpoint)
 
@@ -116,9 +125,13 @@ func (v *VirtualsScraper) ScrapeAgents() error {
         }
 
         if agent != nil {
+            // Mark as fetched regardless of status
+            v.store.MarkFetched(agentID)
+            
             successCount++
             agents = append(agents, *agent)
-            v.logger.Printf("[SUCCESS] Successfully processed agent %d: %s", id, agent.Name)
+            v.logger.Printf("[SUCCESS] Successfully processed agent %d: %s (Status: %s)", 
+                id, agent.Name, agent.Status)
         }
 
         // Add delay to avoid rate limiting
@@ -231,81 +244,198 @@ func (v *VirtualsScraper) FetchHTML(endpoint string) (*goquery.Document, error) 
     return goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 }
 
+// Add helper function to parse selectors
+func (v *VirtualsScraper) extractTextBySelector(doc *goquery.Document, selectors map[string][]string) map[string]string {
+    result := make(map[string]string)
+    
+    for field, selectorList := range selectors {
+        for _, selector := range selectorList {
+            doc.Find(selector).Each(func(i int, s *goquery.Selection) {
+                text := strings.TrimSpace(s.Text())
+                if text != "" {
+                    v.logger.Printf("[DEBUG] Found %s using selector '%s': %s", field, selector, text)
+                    if _, exists := result[field]; !exists {
+                        result[field] = text
+                    }
+                }
+            })
+        }
+    }
+    return result
+}
+
 func (v *VirtualsScraper) parseAgentPage(doc *goquery.Document, id int) (*models.Agent, error) {
     v.logger.Printf("[DEBUG] Starting to parse agent page %d", id)
     
-    agent := &models.Agent{
-        ScrapedAt: time.Now(),
-    }
-
-    // Debug HTML structure before parsing
+    // Save raw HTML first
+    rawPath := filepath.Join(rawDataDir, fmt.Sprintf("agent_%d_raw.html", id))
     if html, err := doc.Html(); err == nil {
-        debugPath := filepath.Join(rawDataDir, "debug", fmt.Sprintf("parsed_%d_%d.html", id, time.Now().Unix()))
-        if err := os.WriteFile(debugPath, []byte(html), 0644); err != nil {
-            v.logger.Printf("[WARN] Failed to save parsed HTML: %v", err)
+        if err := os.WriteFile(rawPath, []byte(html), 0644); err != nil {
+            v.logger.Printf("[WARN] Failed to save raw HTML: %v", err)
         }
     }
 
-    // Extract name (using the heading format shown)
-    name := strings.TrimSpace(doc.Find("h1").First().Text())
-    if name == "" {
-        // Try alternative selector
-        name = strings.TrimSpace(doc.Find(".MuiTypography-h1").First().Text())
+    // Define selectors for different fields
+    selectors := map[string][]string{
+        "name": {
+            ".text-neutral10.text-2xl",
+            "h1",
+            ".agent-name",
+            "div.text-2xl",
+        },
+        "price": {
+            ".text-neutral30",
+            "div:contains('$')",
+            ".price",
+        },
+        "description": {
+            "div:contains('Biography') + div",
+            ".text-base.text-neutral30.break-all",
+            ".agent-description",
+        },
     }
 
-    // Extract price (from the $REIKO format shown)
-    price := doc.Find("div:contains('$')").First().Text()
-    price = strings.TrimSpace(strings.Split(price, "\n")[0]) // Take first line only
-
-    // Extract stats from Influence Metrics section
-    var stats strings.Builder
-    doc.Find("div:contains('Influence Metrics')").Parent().Find("div").Each(func(i int, s *goquery.Selection) {
-        text := strings.TrimSpace(s.Text())
-        if text != "" && !strings.Contains(text, "Influence Metrics") {
-            stats.WriteString(text + "\n")
-        }
-    })
-
-    // Extract description from Biography section
-    description := doc.Find("div:contains('Biography')").Parent().Find("div").Last().Text()
-    description = strings.TrimSpace(description)
-
-    // Additional token data extraction
-    doc.Find("div:contains('Token Data')").Parent().Find("div").Each(func(i int, s *goquery.Selection) {
-        text := strings.TrimSpace(s.Text())
-        if text != "" && strings.Contains(text, "$") {
-            stats.WriteString("Token: " + text + "\n")
-        }
-    })
-
-    // Log extracted data
+    // Extract text using selectors
+    extracted := v.extractTextBySelector(doc, selectors)
+    
+    // Log all found text for debugging
     v.logger.Printf("[DEBUG] Extracted data for agent %d:", id)
-    v.logger.Printf("  Name: %s", name)
-    v.logger.Printf("  Price: %s", price)
-    v.logger.Printf("  Description: %s", description)
-    v.logger.Printf("  Stats: %s", stats.String())
+    for field, value := range extracted {
+        v.logger.Printf("[DEBUG] %s: %s", field, value)
+    }
 
-    // Save the data
-    agent.Name = name
-    agent.Price = price
-    agent.Description = description
-    agent.Stats = stats.String()
+    // Create agent with found data
+    agent := &models.Agent{
+        ScrapedAt:    time.Now(),
+        ParseSuccess: true,
+    }
+
+    // Extract influence metrics
+    metrics := v.extractInfluenceMetrics(doc)
+    v.logger.Printf("[DEBUG] Extracted metrics: %+v", metrics)
+
+    // Extract token data
+    tokenData := v.extractTokenData(doc)
+    v.logger.Printf("[DEBUG] Extracted token data: %+v", tokenData)
+
+    // Set agent fields
+    agent.Name = extracted["name"]
+    agent.Price = extracted["price"]
+    agent.Description = extracted["description"]
+    agent.InfluenceMetrics = metrics
+    agent.TokenData = tokenData
+
+    // Save parsed data as JSON
+    if agent.Name != "" || agent.Price != "" || agent.Description != "" {
+        jsonPath := filepath.Join(rawDataDir, fmt.Sprintf("agent_%d.json", id))
+        if data, err := json.MarshalIndent(agent, "", "  "); err == nil {
+            if err := os.WriteFile(jsonPath, data, 0644); err != nil {
+                v.logger.Printf("[WARN] Failed to save JSON data: %v", err)
+            }
+        }
+    }
 
     if agent.Name == "" {
-        v.logger.Printf("[ERROR] No agent name found for ID %d", id)
-        doc.Find("*").Each(func(i int, s *goquery.Selection) {
-            if class, exists := s.Attr("class"); exists {
-                text := strings.TrimSpace(s.Text())
-                if text != "" {
-                    v.logger.Printf("[DEBUG] Element %d - Class: '%s', Text: '%s'", i, class, text)
-                }
+        v.logger.Printf("[WARN] No name found for agent %d, attempting deeper search", id)
+        // Try to find any meaningful text
+        doc.Find("div,span,p").Each(func(i int, s *goquery.Selection) {
+            text := strings.TrimSpace(s.Text())
+            if strings.Contains(text, "chan") || strings.Contains(text, "Agent") {
+                v.logger.Printf("[DEBUG] Potential name found: %s", text)
             }
         })
         return nil, fmt.Errorf("no agent name found for ID %d", id)
     }
 
     agent.GenerateID()
+    agent.UpdateStatus()
+    
+    // Log final parsed agent
+    v.logger.Printf("[SUCCESS] Parsed agent %d: %+v", id, agent)
     return agent, nil
+}
+
+func (v *VirtualsScraper) extractText(doc *goquery.Document, selectors []string) string {
+    for _, selector := range selectors {
+        if text := strings.TrimSpace(doc.Find(selector).First().Text()); text != "" {
+            return text
+        }
+    }
+    return ""
+}
+
+func (v *VirtualsScraper) extractInfluenceMetrics(doc *goquery.Document) models.InfluenceMetrics {
+    var metrics models.InfluenceMetrics
+    
+    doc.Find("div:contains('Influence Metrics')").Parent().Find(".rounded-2xl").Each(func(i int, s *goquery.Selection) {
+        label := strings.TrimSpace(s.Find(".text-neutral50").Text())
+        value := strings.TrimSpace(s.Find(".text-neutral10").Text())
+        
+        switch strings.ToLower(label) {
+        case "mindshare":
+            metrics.Mindshare = value
+        case "impressions":
+            metrics.Impressions = value
+        case "engagement":
+            metrics.Engagement = value
+        case "followers":
+            metrics.Followers = value
+        case "smart followers":
+            metrics.SmartFollowers = value
+        case "top tweets":
+            metrics.TopTweets = value
+        }
+    })
+    
+    return metrics
+}
+
+func (v *VirtualsScraper) extractTokenData(doc *goquery.Document) models.TokenData {
+    var tokenData models.TokenData
+    
+    doc.Find("div:contains('Token Data')").Parent().Find(".grid-cols-4").Each(func(i int, s *goquery.Selection) {
+        s.Find(".flex-col").Each(func(j int, col *goquery.Selection) {
+            label := strings.TrimSpace(col.Find(".text-neutral50").Text())
+            value := strings.TrimSpace(col.Find(".text-[#236D66]").Text())
+            
+            switch strings.ToLower(label) {
+            case "mc (fdv)":
+                tokenData.MCFDV = value
+            case "24h chg":
+                tokenData.Change24h = value
+            case "tvl":
+                tokenData.TVL = value
+            case "holders":
+                tokenData.Holders = value
+            case "24h vol":
+                tokenData.Volume24h = value
+            case "inferences":
+                tokenData.Inferences = value
+            }
+        })
+    })
+    
+    return tokenData
+}
+
+func (v *VirtualsScraper) logElementsForDebugging(doc *goquery.Document) {
+    v.logger.Println("[DEBUG] Element structure:")
+    doc.Find("*").Each(func(i int, s *goquery.Selection) {
+        if class, exists := s.Attr("class"); exists {
+            text := strings.TrimSpace(s.Text())
+            if text != "" {
+                v.logger.Printf("[DEBUG] Element %d - Class: '%s', Text preview: '%s'",
+                    i, class, truncateString(text, 50))
+            }
+        }
+    })
+}
+
+func truncateString(s string, n int) string {
+    if len(s) <= n {
+        return s
+    }
+    return s[:n] + "..."
 }
 
 // StopScheduler implements the Scraper interface
