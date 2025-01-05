@@ -20,7 +20,7 @@ import (
 
 const (
     startAgentID = 1
-    maxAgentID   = 500  // Increase range to catch more agents
+    maxAgentID   = 20000  // Increase range to catch more agents
     rawDataDir   = "training_data/raw"
     logFile      = "training_data/scraper.log"
 )
