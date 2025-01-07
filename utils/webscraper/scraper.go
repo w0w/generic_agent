@@ -12,3 +12,4 @@ type Scraper interface {
     GetStore() *storage.AgentStore
     StopScheduler()
 }
+

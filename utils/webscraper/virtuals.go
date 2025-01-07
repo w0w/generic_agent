@@ -66,7 +66,7 @@ func NewVirtualsScraper(logger *log.Logger, store *storage.AgentStore) *Virtuals
     }
     
     // Start the scheduler
-    vs.scheduler.Start()
+   // vs.scheduler.Start()
     
     return vs
 }
@@ -242,6 +242,73 @@ func (v *VirtualsScraper) FetchHTML(endpoint string) (*goquery.Document, error) 
     }
 
     return goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+}
+
+// GetAgentScreenshot takes an agent ID and returns the screenshot of the agent's page
+func (v *VirtualsScraper) GetAgentScreenshot(agentID int) ([]byte, error) {
+	endpoint := fmt.Sprintf("/virtuals/%d", agentID)
+	url := v.baseURL + endpoint
+	v.logger.Printf("[DEBUG] Fetching URL for screenshot: %s", url)
+
+	// Create Chrome instance with options
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-web-security", true),
+		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"),
+	)
+
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancel()
+
+	ctx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(v.logger.Printf))
+	defer cancel()
+
+	// Increase timeout to 60 seconds
+	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	var screenshot1, screenshot2 []byte
+
+	// Add error channel for monitoring
+	errChan := make(chan error, 1)
+	doneChan := make(chan bool, 1)
+
+	go func() {
+		err := chromedp.Run(ctx,
+			chromedp.Navigate(url),
+			chromedp.WaitVisible(`body`, chromedp.ByQuery), // Changed from #root to body
+			chromedp.Sleep(5*time.Second),
+			chromedp.CaptureScreenshot(&screenshot1),
+			chromedp.ScrollIntoView(`footer`, chromedp.ByQuery),
+			chromedp.Sleep(2*time.Second),
+			chromedp.CaptureScreenshot(&screenshot2),
+		)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		doneChan <- true
+	}()
+
+	// Wait for completion or error
+	select {
+	case err := <-errChan:
+		v.logger.Printf("[ERROR] Chrome task failed: %v", err)
+		return nil, fmt.Errorf("chrome automation failed: %w", err)
+	case <-doneChan:
+		v.logger.Printf("[SUCCESS] Screenshots captured successfully for agent ID: %d", agentID)
+	case <-time.After(55 * time.Second):
+		v.logger.Printf("[ERROR] Timeout while loading page for screenshot")
+		return nil, fmt.Errorf("timeout while loading page")
+	}
+
+	// Combine screenshots
+	screenshots := append(screenshot1, screenshot2...)
+
+	return screenshots, nil
 }
 
 // Add helper function to parse selectors

@@ -4,13 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
+	"os"
+	"path/filepath" // Add this import
+	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"anondd/llm"
 	"anondd/utils"
+	"anondd/utils/models"
 	"anondd/utils/storage"
-	"anondd/utils/models"  // Add this import
 )
 
 // StartBot starts the Telegram bot with utils manager support.
@@ -55,9 +60,13 @@ func handleCommand(bot *tgbotapi.BotAPI, update tgbotapi.Update, utilsManager *u
 		handleScrapeAgents(bot, update, store, openRouterClient, logger)
 	case "/give_dd":
 		if len(parts) > 1 {
-			handleAgentDD(bot, update, store, openRouterClient, strings.Join(parts[1:], " "), logger)
+			if agentID, err := strconv.Atoi(parts[1]); err == nil {
+				handleAgentDDScreenshot(bot, update, store, openRouterClient, agentID, logger)
+			} else {
+				handleAgentDD(bot, update, store, openRouterClient, strings.Join(parts[1:], " "), logger)
+			}
 		} else {
-			handleTopAgentsDD(bot, update, store, openRouterClient, logger)
+			handleRandomAgentDD(bot, update, store, openRouterClient, logger)
 		}
 	default:
 		handleRegularMessage(bot, update, openRouterClient, logger)
@@ -134,6 +143,78 @@ func handleAgentDD(bot *tgbotapi.BotAPI, update tgbotapi.Update, store *storage.
 
 	response := fmt.Sprintf("🤖 Analysis for %s:\n\n%s", targetAgent.Name, analysis)
 	bot.Send(tgbotapi.NewMessage(chatID, response))
+}
+
+func handleAgentDDScreenshot(bot *tgbotapi.BotAPI, update tgbotapi.Update, store *storage.AgentStore, client *llm.OpenRouterClient, agentID int, logger *log.Logger) {
+	chatID := update.Message.Chat.ID
+
+	// Loading texts
+	loadingTexts := []string{
+		"🔍 Scouting the digital jungle... 🌴🦜 Hang on while I swing through the data!",
+		"🤖 Summoning the code wizards... 🧙‍♂️✨ Casting spells on the data!",
+		"🚀 Launching into cyberspace... 🌌🔭 Preparing for a galactic search!",
+		"👾 Battling digital gremlins... ⚔️👹 One sec while I vanquish these bugs!",
+		"📡 Tuning into the Matrix... 🎛️🔮 Decoding the secrets for you!",
+		"🌀 Diving into the data vortex... 🌊🤿 Surfacing with the details soon!",
+		"⚡ Powering up the flux capacitor... ⏳⚙️ Time traveling for answers!",
+		"🚦 Fastening seatbelts for the data rollercoaster... 🎢🔎 Hold tight!",
+		"🧬 Unraveling the digital DNA... 🧪🔍 Piecing together the info puzzle!",
+		"🎩 Abracadabra, data please... 🃏✨ Pulling magic answers out of the hat!",
+	}
+
+	// Select a random loading text
+	rand.Seed(time.Now().UnixNano())
+	loadingText := loadingTexts[rand.Intn(len(loadingTexts))]
+
+	// Send loader message
+	loaderMsg := tgbotapi.NewMessage(chatID, loadingText)
+	loaderMsgID, _ := bot.Send(loaderMsg)
+
+	// Get a random screenshot from the training_data/raw/debug directory
+	debugDir := "training_data/raw/debug"
+	files, err := os.ReadDir(debugDir)
+	if err != nil {
+		logger.Printf("Error reading debug directory: %v", err)
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ Unable to read debug directory."))
+		return
+	}
+
+	var screenshots []string
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".png") {
+			screenshots = append(screenshots, filepath.Join(debugDir, file.Name()))
+		}
+	}
+
+	if len(screenshots) == 0 {
+		bot.Send(tgbotapi.NewMessage(chatID, "❌ No screenshots available in debug directory."))
+		return
+	}
+
+	// Select a random screenshot
+	randomScreenshot := screenshots[rand.Intn(len(screenshots))]
+
+	// Edit loader message to indicate screenshot is ready
+	editMsg := tgbotapi.NewEditMessageText(chatID, loaderMsgID.MessageID, "✅ Agent details fetched successfully!")
+	bot.Send(editMsg)
+
+	// Send the screenshot to the user
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(randomScreenshot))
+	bot.Send(photo)
+
+	// Add some light fun to the DD
+	funMessage := fmt.Sprintf("Here's a sneak peek of agent %d! 🤖\n\n", agentID)
+	funMessage += "Did you know? This agent is known for its exceptional performance and unique characteristics. Keep an eye on it! 👀"
+
+	bot.Send(tgbotapi.NewMessage(chatID, funMessage))
+}
+
+func handleRandomAgentDD(bot *tgbotapi.BotAPI, update tgbotapi.Update, store *storage.AgentStore, client *llm.OpenRouterClient, logger *log.Logger) {
+	// Pick a random agent ID between 0 and 100
+	rand.Seed(time.Now().UnixNano())
+	agentID := rand.Intn(101)
+
+	handleAgentDDScreenshot(bot, update, store, client, agentID, logger)
 }
 
 func handleTopAgentsDD(bot *tgbotapi.BotAPI, update tgbotapi.Update, store *storage.AgentStore, client *llm.OpenRouterClient, logger *log.Logger) {
